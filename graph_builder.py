@@ -283,3 +283,42 @@ def compile_graph(plan: AgentPlan):
 
 def initial_state(task_input: dict[str, Any]) -> GraphState:
     return {"input": task_input, "outputs": {}, "errors": [], "halted": False}
+
+
+def run_single_agent(
+    plan: AgentPlan,
+    agent_id: str,
+    task_input: dict[str, Any],
+    upstream_outputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one agent node in isolation (the per-agent endpoint path).
+
+    `upstream_outputs` lets the caller supply the outputs this agent's `depends_on`
+    would normally provide, without running the whole graph.
+    """
+    spec = next((a for a in plan.agents if a.id == agent_id), None)
+    if spec is None:
+        raise KeyError(agent_id)
+    node = _make_node(spec, plan.bounds)
+    state = initial_state(task_input)
+    state["outputs"] = dict(upstream_outputs or {})
+    return node(state)
+
+
+def run_graph(graph, task_input: dict[str, Any], bounds: RunBounds) -> dict[str, Any]:
+    """Invoke a compiled graph with a wall-clock timeout bound (principle: every run is
+    bounded, not left to model good behavior)."""
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            graph.invoke,
+            initial_state(task_input),
+            {"recursion_limit": 50},
+        )
+        try:
+            return future.result(timeout=bounds.timeout_s)
+        except concurrent.futures.TimeoutError as e:
+            raise TimeoutError(
+                f"graph run exceeded {bounds.timeout_s}s timeout"
+            ) from e
