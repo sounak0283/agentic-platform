@@ -39,10 +39,19 @@ Rules you MUST follow:
 - `llm` for each agent must be chosen ONLY from the available LLM options given below
   (copy provider + model exactly).
 - Wire agents with `depends_on` (list of other agent ids whose output this agent needs).
-- Pick `orchestration_pattern`: "sequential" for a strict pipeline (each agent feeds the
-  next), "parallel" for independent agents merged at the end, "supervisor" for runtime
-  routing. For a simple linear task, use "sequential".
+- Pick `orchestration_pattern`:
+    * "sequential" — a strict pipeline where each agent feeds the next. Use for simple
+      linear tasks. Wire the order with depends_on.
+    * "parallel" — independent agents work on the same input concurrently, then one
+      merge/synthesis agent combines them. Give the independent agents an empty
+      depends_on, and give the merge agent depends_on listing all of them.
+    * "supervisor" — a router agent decides at runtime which worker acts next, looping
+      until done. Use when the task needs conditional branching or dynamic ordering.
 - depends_on must not contain cycles for sequential/parallel patterns.
+- If and ONLY if you choose "supervisor", also set `supervisor_id` to the id of the
+  router agent (it must be one of the agents), and leave the worker agents' depends_on
+  empty (the supervisor decides ordering at runtime). For sequential/parallel, leave
+  `supervisor_id` null.
 """
 
 

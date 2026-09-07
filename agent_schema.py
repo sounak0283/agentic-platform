@@ -58,13 +58,19 @@ class AgentSpec(BaseModel):
 
 class RunBounds(BaseModel):
     max_steps: int = 8
-    timeout_s: float = 60.0
+    # Whole-graph wall-clock cap. Frontier reasoning models (e.g. Gemini 3.1 Pro) can take
+    # tens of seconds per agent, and a multi-agent run chains several such calls, so the
+    # default is generous; tighten it per project for latency-sensitive deployments.
+    timeout_s: float = 300.0
     max_retries: int = 3
 
 
 class AgentPlan(BaseModel):
     agents: list[AgentSpec]
     orchestration_pattern: OrchestrationPattern
+    # Required for the supervisor pattern: the id of the agent that routes at runtime.
+    # Must be None for sequential/parallel.
+    supervisor_id: str | None = None
     bounds: RunBounds = Field(default_factory=RunBounds)
 
     @model_validator(mode="after")
@@ -90,6 +96,24 @@ class AgentPlan(BaseModel):
 
         if self.orchestration_pattern in ("sequential", "parallel"):
             _assert_acyclic(self.agents)
+
+        if self.orchestration_pattern == "supervisor":
+            if self.supervisor_id is None:
+                raise ValueError("supervisor pattern requires supervisor_id to be set")
+            if self.supervisor_id not in id_set:
+                raise ValueError(
+                    f"supervisor_id '{self.supervisor_id}' is not a known agent id"
+                )
+            workers = [a for a in self.agents if a.id != self.supervisor_id]
+            if not workers:
+                raise ValueError(
+                    "supervisor pattern requires at least one worker agent besides the "
+                    "supervisor"
+                )
+        elif self.supervisor_id is not None:
+            raise ValueError(
+                "supervisor_id may only be set when orchestration_pattern is 'supervisor'"
+            )
 
         return self
 
