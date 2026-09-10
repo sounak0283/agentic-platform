@@ -62,7 +62,7 @@ decisions.
 flowchart TD
     A["User input<br/><small>Task description + agent count</small>"] --> B["Meta-planner LLM<br/><small>Parses brief into a structured agent plan</small>"]
     B --> C["Agent compiler<br/><small>Builds a LangGraph graph from the plan</small>"]
-    C --> D["Deployment layer<br/><small>Registers live API routes per project</small>"]
+    C --> D["Deployment layer<br/><small>Packages graph as a Bedrock AgentCore runtime + per-project routes</small>"]
     D --> E["Per-agent endpoints<br/><small>One callable route per agent</small>"]
     D --> F["Aggregator endpoint<br/><small>One combined structured response</small>"]
 ```
@@ -77,8 +77,12 @@ flowchart TD
 - **Agent compiler** — a fixed, well-tested function that interprets the `AgentPlan` and
   builds a LangGraph graph. It never executes model-generated code — only model-generated
   *configuration*.
-- **Deployment layer** — registers the compiled graph behind versioned, per-project API
-  routes and returns their URLs plus auto-generated API docs.
+- **Deployment layer** — packages the compiled graph as an Amazon Bedrock AgentCore
+  Runtime agent (an `/invocations` + `/ping` HTTP contract in an ARM64 container) and
+  registers it behind versioned, per-project routes, returning the AgentCore runtime ARN
+  / invoke URL plus auto-generated API docs. Locally and for the MVP the same graph is
+  served directly by FastAPI; AgentCore is the managed, scalable serving target it
+  promotes to.
 - **Endpoints** — one route per agent for direct, granular access, and one optional
   aggregator route that runs the whole graph and returns a single structured response.
 
@@ -105,8 +109,9 @@ All three are first-class and chosen by the planner per project, never hardcoded
 | Cache / queue | Redis | Compiled-graph cache, background compilation jobs |
 | Background workers | Celery / RQ | Async compilation and long-running agent executions |
 | Observability | LangSmith (or equiv.) | Per-run tracing; explains why an agent produced an output |
-| Isolation (scale-up path) | Modal / AWS Lambda | Promote a heavy or sensitive tenant to dedicated infra |
-| Secrets management | KMS-backed encryption | BYOK provider keys encrypted at rest, decrypted only in memory |
+| Deployment / serving | Amazon Bedrock AgentCore Runtime | Managed, serverless, session-isolated hosting for the compiled LangGraph graph; scales to zero, per-project runtimes |
+| Isolation (scale-up path) | Dedicated AgentCore runtime per tenant | Promote a heavy or sensitive tenant to its own AgentCore runtime + execution role without a rewrite |
+| Secrets management | KMS-backed encryption + AgentCore Identity / Secrets Manager | BYOK provider keys encrypted at rest, decrypted only in memory at call time |
 
 ### Supported LLM providers
 
@@ -180,8 +185,8 @@ result = await graph.ainvoke({"input": {"topic": "..."}, "outputs": {}})
 | Phase | Scope | Key deliverables |
 |---|---|---|
 | **MVP** | Prove the core loop end to end | Meta-planner + schema; in-memory graph compile; single-process FastAPI dynamic routes; sequential orchestration only |
-| **V1** | Broaden orchestration & usability | Parallel + supervisor patterns; persistence (Postgres/Redis); per-project API keys; plan-review/edit UX; synthesis (aggregate) endpoint |
-| **V2** | Scale & harden | Tenant isolation for heavy users; observability dashboard; expanded tool registry; rate limiting and billing |
+| **V1** | Broaden orchestration & usability | Parallel + supervisor patterns; persistence (Postgres/Redis); per-project API keys; plan-review/edit UX; synthesis (aggregate) endpoint; **package a compiled project as a Bedrock AgentCore runtime (`/invocations` + `/ping`, ARM64 container) and deploy via the AgentCore starter toolkit** |
+| **V2** | Scale & harden | Dedicated AgentCore runtime per heavy/isolated tenant; AgentCore Observability + LangSmith dashboard; expanded tool registry (optionally via AgentCore Gateway); rate limiting and billing |
 
 ---
 
@@ -194,3 +199,50 @@ result = await graph.ainvoke({"input": {"topic": "..."}, "outputs": {}})
 - Every agent run is bounded — enforced max steps, timeouts, token budgets, and error
   retries (see `SYSTEM_PROMPT.md`), not left to model good behavior.
 - Tools with real-world side effects require explicit per-project opt-in.
+- Each deployed project runs in an isolated Amazon Bedrock AgentCore runtime session, so
+  one tenant's execution state, memory, and credentials never bleed into another's.
+
+---
+
+## Deployment (Amazon Bedrock AgentCore)
+
+The compiled LangGraph graph is served on **Amazon Bedrock AgentCore Runtime** — a
+managed, serverless, session-isolated agent host — rather than on self-managed servers.
+
+**Contract.** An AgentCore agent is a container that exposes two HTTP endpoints:
+
+- `POST /invocations` — the primary entrypoint; receives the task input as JSON and
+  returns the agent/graph result (streaming supported).
+- `GET /ping` — health check used by the runtime.
+
+The container must be **ARM64**. The platform's deployment layer wraps
+`compile_graph` / `run_graph` behind that contract — either by hand or via the
+`bedrock-agentcore` Python SDK's `@entrypoint` decorator (starter toolkit), which
+handles the HTTP server details.
+
+**Deploy flow.**
+
+1. Compiler produces a validated, runnable graph for a project.
+2. Deployment layer emits an AgentCore-compatible entrypoint (`/invocations` + `/ping`)
+   wrapping that graph, plus a `requirements` set and an ARM64 container image.
+3. The image is pushed and a runtime is created/updated (via the AgentCore starter
+   toolkit or the `bedrock-agentcore` control-plane APIs), with an IAM execution role
+   scoped to only what that project needs.
+4. Clients invoke the deployed agent through the `InvokeAgentRuntime` API (or the
+   per-project route the platform exposes over it), passing the same JSON task input the
+   local FastAPI path accepts.
+
+**Project-to-runtime mapping.** AgentCore hosts one agent per deployed artifact, so a
+project maps to a runtime one of two ways (decision recorded per environment, see
+`SYSTEM_FLOW.md`):
+
+- **Runtime-per-project** — strongest isolation, matches the "promote a tenant to
+  dedicated infra" principle; one deploy step per project.
+- **Shared runtime with in-payload routing** — a single runtime dispatches to the right
+  compiled graph by project id in the invocation payload; fewer deploys, weaker
+  isolation.
+
+**Local vs. deployed.** The MVP FastAPI app (`app.py`) serves compiled graphs directly
+in-process for development and testing. AgentCore is the managed serving target the same
+graph is promoted to for production — the compiler/runtime code is unchanged; only the
+serving envelope differs.

@@ -12,6 +12,7 @@ Exits non-zero on any failure.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -32,9 +33,14 @@ def _fail(msg: str) -> None:
     sys.exit(1)
 
 
-def _spec(id_, role, prompt, deps=None):
+def _spec(id_, role, prompt, deps=None, tools=None):
     return AgentSpec(
-        id=id_, role=role, system_prompt=prompt, llm=_LLM, depends_on=deps or []
+        id=id_,
+        role=role,
+        system_prompt=prompt,
+        llm=_LLM,
+        depends_on=deps or [],
+        tools=tools or [],
     )
 
 
@@ -128,6 +134,26 @@ def main() -> None:
         supervisor_id="sup",
     )
     _check_run("supervisor", supervisor, {"question": "What is 12 times 8?"})
+
+    # 7. Real web_search tool, gated on TAVILY_API_KEY being set — a project must
+    # explicitly opt in by naming it in available_tools (never auto-attached).
+    if os.environ.get("TAVILY_API_KEY"):
+        print("[7] web_search tool (real Tavily call)")
+        search_plan = AgentPlan(
+            agents=[
+                _spec(
+                    "researcher",
+                    "Researcher",
+                    "Use the web_search tool to find one current fact about the input "
+                    "topic, then report it in one sentence.",
+                    tools=["web_search"],
+                )
+            ],
+            orchestration_pattern="sequential",
+        )
+        _check_run("web_search", search_plan, {"topic": "the current version of Python"})
+    else:
+        print("[7] SKIPPED web_search step: TAVILY_API_KEY not set in environment")
 
     print("\nOK: end-to-end smoke passed (sequential + parallel + supervisor).")
 

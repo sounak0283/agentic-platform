@@ -36,6 +36,15 @@ class UnsupportedProviderError(PlatformError):
         super().__init__(f"unsupported LLM provider: '{provider}'")
 
 
+class MissingToolKeyError(PlatformError):
+    def __init__(self, tool_name: str, env_var: str):
+        self.tool_name = tool_name
+        self.env_var = env_var
+        super().__init__(
+            f"no API key found for tool '{tool_name}' (expected env var {env_var})"
+        )
+
+
 class PlannerError(PlatformError):
     """Raised when the meta-planner cannot produce a valid AgentPlan within the retry ceiling."""
 

@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.9",
     "python-dotenv>=1.0",
     "langchain-google-genai>=4.4.0",
+    "langchain-tavily>=0.2",
 ]
 
 [dependency-groups]

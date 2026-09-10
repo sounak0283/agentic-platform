@@ -20,6 +20,7 @@ from agent_schema import AgentPlan
 from config import DEFAULT_MODELS, DEFAULT_PROVIDER
 from errors import (
     MissingProviderKeyError,
+    MissingToolKeyError,
     PlannerError,
     PlatformError,
     UnknownToolError,
@@ -27,7 +28,7 @@ from errors import (
 )
 from graph_builder import compile_graph, run_graph, run_single_agent
 from meta_planner_prompt import plan_project
-from tools import TOOL_REGISTRY
+from tools import SIDE_EFFECT_TOOLS, default_tool_names
 
 app = FastAPI(
     title="Agentic Platform",
@@ -88,7 +89,10 @@ def create_project(req: CreateProjectRequest) -> dict[str, Any]:
     available_llms = req.available_llms or [
         {"provider": DEFAULT_PROVIDER, "model": DEFAULT_MODELS[DEFAULT_PROVIDER]}
     ]
-    available_tools = req.available_tools if req.available_tools is not None else list(TOOL_REGISTRY)
+    # Side-effecting tools (network egress, third-party APIs) are excluded by default;
+    # a caller opts a project into one by naming it explicitly here.
+    available_tools = req.available_tools if req.available_tools is not None else default_tool_names()
+    side_effect_tools_enabled = sorted(set(available_tools) & SIDE_EFFECT_TOOLS)
     plan = plan_project(
         user_brief=req.brief,
         requested_agent_count=req.agent_count,
@@ -96,8 +100,17 @@ def create_project(req: CreateProjectRequest) -> dict[str, Any]:
         available_llms=available_llms,
     )
     project_id = uuid.uuid4().hex
-    _PROJECTS[project_id] = {"id": project_id, "brief": req.brief, "plan": plan}
-    return {"project_id": project_id, "plan": plan.model_dump()}
+    _PROJECTS[project_id] = {
+        "id": project_id,
+        "brief": req.brief,
+        "plan": plan,
+        "side_effect_tools_enabled": side_effect_tools_enabled,
+    }
+    return {
+        "project_id": project_id,
+        "plan": plan.model_dump(),
+        "side_effect_tools_enabled": side_effect_tools_enabled,
+    }
 
 
 @app.get("/projects/{project_id}")
@@ -108,6 +121,7 @@ def get_project(project_id: str) -> dict[str, Any]:
         "brief": project["brief"],
         "plan": project["plan"].model_dump(),
         "compiled": project_id in _COMPILED,
+        "side_effect_tools_enabled": project.get("side_effect_tools_enabled", []),
     }
 
 
@@ -193,6 +207,12 @@ def _handle_unsupported_provider(_req: Request, exc: UnsupportedProviderError):
 def _handle_missing_key(_req: Request, exc: MissingProviderKeyError):
     # Server misconfiguration, not client error — but never echo the key or its value.
     return _error_response(500, "MissingProviderKey", str(exc))
+
+
+@app.exception_handler(MissingToolKeyError)
+def _handle_missing_tool_key(_req: Request, exc: MissingToolKeyError):
+    # Server misconfiguration, not client error — but never echo the key or its value.
+    return _error_response(500, "MissingToolKey", str(exc))
 
 
 @app.exception_handler(PlannerError)

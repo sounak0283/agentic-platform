@@ -57,7 +57,24 @@ here.
 - Multi-tenancy from day one — every resource keyed by project/tenant id, even while
   running as a single shared process.
 - Architecture must allow promoting a tenant to isolated infrastructure later without a
-  rewrite.
+  rewrite — the concrete target is a dedicated Amazon Bedrock AgentCore runtime (with its
+  own execution role) per promoted tenant.
+
+## Deployment (Bedrock AgentCore)
+
+- The managed serving target for a compiled graph is **Amazon Bedrock AgentCore Runtime**,
+  not self-managed servers. An AgentCore agent is an ARM64 container exposing
+  `POST /invocations` (task input in, result out; streaming supported) and `GET /ping`
+  (health) — wrap `compile_graph`/`run_graph` behind that contract, via the
+  `bedrock-agentcore` SDK `@entrypoint` (starter toolkit) or by implementing the two
+  endpoints directly. Clients reach it through the `InvokeAgentRuntime` API.
+- The local FastAPI app (`app.py`) stays the dev/MVP serving path and the source of the
+  same JSON task-input contract — AgentCore changes the serving envelope, not the
+  compiler or runtime code. Keep them in sync so a graph runs identically both ways.
+- Decide project→runtime mapping explicitly (runtime-per-project for strong isolation, or
+  a shared runtime routing by project id in the payload) — don't leave it implicit.
+- Provider keys go through KMS / Secrets Manager (or AgentCore Identity), never baked into
+  the image or logged.
 
 ## Security requirements
 
@@ -78,6 +95,7 @@ here.
 | Cache/queue | Redis |
 | Background workers | Celery / RQ |
 | Observability | LangSmith (or equivalent) — every run and every retry must be traceable |
+| Deployment / serving | Amazon Bedrock AgentCore Runtime (ARM64 container, `/invocations` + `/ping`); FastAPI in-process for local/MVP |
 
 LLM providers: OpenAI, Anthropic, Google, Groq via LangChain's native
 `init_chat_model`. Moonshot (Kimi) via a direct `ChatOpenAI` client against Moonshot's

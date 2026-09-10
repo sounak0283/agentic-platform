@@ -1,4 +1,7 @@
+from langchain_core.tools import tool
+
 import graph_builder as gb
+import tools as tools_module
 from agent_schema import AgentOutput, AgentPlan, AgentSpec, LLMConfig, RunBounds
 from graph_builder import _SupervisorDecision, compile_graph, initial_state
 
@@ -158,6 +161,63 @@ def test_supervisor_routes_then_finishes(monkeypatch):
     assert result["outputs"]["w"]["content"] == "work done"
     assert result["next_agent"] == "FINISH"
     assert result["supervisor_steps"] == 2
+
+
+# ------------------------------------------------------------------------------ tools
+@tool
+def _fake_web_search(query: str) -> str:
+    """Deterministic stand-in for the real web_search tool, so this test never hits
+    Tavily's API."""
+    return f"search result for {query}"
+
+
+class _FakeAIMessage:
+    def __init__(self, tool_calls):
+        self.tool_calls = tool_calls
+
+
+class _FakeToolCallLLM:
+    """Fakes one round of tool-calling then a structured final answer, exercising the
+    tool loop in `_run_agent_once` end to end through the compiled graph."""
+
+    def __init__(self, structured):
+        self._structured = structured
+        self._calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self._calls += 1
+        if self._calls == 1:
+            return _FakeAIMessage(
+                tool_calls=[{"name": "web_search", "args": {"query": "test"}, "id": "call-1"}]
+            )
+        return _FakeAIMessage(tool_calls=[])
+
+    def with_structured_output(self, schema):
+        return self._structured
+
+
+def test_agent_with_tools_calls_tool_then_produces_structured_output(monkeypatch):
+    monkeypatch.setitem(tools_module.TOOL_REGISTRY, "web_search", lambda: _fake_web_search)
+    fake_llm = _FakeToolCallLLM(_Structured([AgentOutput(content="done")]))
+    monkeypatch.setattr(gb, "get_llm", lambda cfg: fake_llm)
+    monkeypatch.setattr(gb.time, "sleep", lambda s: None)
+
+    spec = AgentSpec(
+        id="a",
+        role="worker",
+        system_prompt="agent a",
+        llm=LLMConfig(provider="google_genai", model="tool-model"),
+        tools=["web_search"],
+    )
+    plan = AgentPlan(agents=[spec], orchestration_pattern="sequential")
+    result = compile_graph(plan).invoke(initial_state({"q": "x"}))
+
+    assert result["halted"] is False
+    assert result["errors"] == []
+    assert result["outputs"]["a"]["content"] == "done"
 
 
 def test_supervisor_invalid_route_target_finishes_safely(monkeypatch):

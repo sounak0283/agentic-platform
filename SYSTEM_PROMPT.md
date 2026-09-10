@@ -68,7 +68,10 @@ SCALABILITY & RELIABILITY REQUIREMENTS
   if early deployment is a single shared process — this avoids a painful later migration.
 - Assume some tenants will eventually need dedicated, isolated deployments (heavier
   usage, compliance needs) — the architecture should allow "promoting" a project to
-  isolated infrastructure without a rewrite.
+  isolated infrastructure without a rewrite. The concrete target for both default and
+  promoted serving is Amazon Bedrock AgentCore Runtime (a managed, session-isolated agent
+  host): a shared runtime early on, a dedicated runtime + execution role per promoted
+  tenant later.
 
 SECURITY REQUIREMENTS
 - Any user-supplied API keys (bring-your-own-key model access) are encrypted at rest and
@@ -80,7 +83,15 @@ SECURITY REQUIREMENTS
 DEFAULT TECH DIRECTION (deviate only with a clear reason)
 - Orchestration: LangGraph. Agent/tool abstractions: LangChain.
 - API layer: FastAPI (async), with auto-generated OpenAPI docs treated as a real
-  deliverable for end users, not an afterthought.
+  deliverable for end users, not an afterthought. This is the local/MVP serving path.
+- Deployment / serving: Amazon Bedrock AgentCore Runtime is the managed target for a
+  compiled graph — an ARM64 container exposing `POST /invocations` (task input in, result
+  out; streaming supported) and `GET /ping` (health), invoked via the `InvokeAgentRuntime`
+  API. Wrap `compile_graph`/`run_graph` behind that contract using the `bedrock-agentcore`
+  SDK `@entrypoint` (starter toolkit) or the two endpoints directly; the compiler/runtime
+  code stays identical whether served locally by FastAPI or on AgentCore. Decide
+  project→runtime mapping (runtime-per-project vs. shared runtime routing by project id)
+  explicitly per environment.
 - Primary datastore: Postgres. Cache/queue: Redis (or equivalent managed service).
 - LLM providers: OpenAI, Anthropic, Google, Groq via LangChain's native `init_chat_model`;
   Kimi K3 (Moonshot) via a direct `ChatOpenAI` client against Moonshot's OpenAI-compatible

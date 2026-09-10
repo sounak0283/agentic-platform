@@ -83,3 +83,40 @@ def test_openapi_docs_available(monkeypatch):
     c = _client(monkeypatch)
     assert c.get("/openapi.json").status_code == 200
     assert c.get("/docs").status_code == 200
+
+
+def test_create_project_default_excludes_side_effect_tools(monkeypatch):
+    c = _client(monkeypatch)
+    seen_kwargs = {}
+
+    def spy(**kw):
+        seen_kwargs.update(kw)
+        return _plan()
+
+    monkeypatch.setattr(app_module, "plan_project", spy)
+    r = c.post("/projects", json={"brief": "x", "agent_count": 1})
+    assert r.status_code == 201
+    assert "web_search" not in seen_kwargs["available_tools"]
+    assert "lookup" in seen_kwargs["available_tools"]
+    assert r.json()["side_effect_tools_enabled"] == []
+
+
+def test_create_project_explicit_web_search_is_opt_in(monkeypatch):
+    c = _client(monkeypatch)
+    seen_kwargs = {}
+
+    def spy(**kw):
+        seen_kwargs.update(kw)
+        return _plan()
+
+    monkeypatch.setattr(app_module, "plan_project", spy)
+    r = c.post(
+        "/projects",
+        json={"brief": "x", "agent_count": 1, "available_tools": ["lookup", "web_search"]},
+    )
+    assert r.status_code == 201
+    assert seen_kwargs["available_tools"] == ["lookup", "web_search"]
+    assert r.json()["side_effect_tools_enabled"] == ["web_search"]
+
+    pid = r.json()["project_id"]
+    assert c.get(f"/projects/{pid}").json()["side_effect_tools_enabled"] == ["web_search"]
