@@ -1,9 +1,9 @@
 from langchain_core.tools import tool
 
-import graph_builder as gb
-import tools as tools_module
-from agent_schema import AgentOutput, AgentPlan, AgentSpec, LLMConfig, RunBounds
-from graph_builder import _SupervisorDecision, compile_graph, initial_state
+import agentic_platform.graph_builder as gb
+import agentic_platform.tools as tools_module
+from agentic_platform.agent_schema import AgentOutput, AgentPlan, AgentSpec, LLMConfig, RunBounds
+from agentic_platform.graph_builder import _SupervisorDecision, compile_graph, initial_state
 
 
 def _spec(id_, model, depends_on=None):

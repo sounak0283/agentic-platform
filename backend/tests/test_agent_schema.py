@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from agent_schema import AgentPlan, AgentSpec, LLMConfig
+from agentic_platform.agent_schema import AgentPlan, AgentSpec, LLMConfig
 
 
 def _spec(id_, depends_on=None, **kw):

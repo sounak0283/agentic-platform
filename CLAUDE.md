@@ -5,11 +5,12 @@ meta-planner LLM turns that into a structured `AgentPlan`, a fixed compiler turn
 plan into a runnable LangGraph graph, and a deployment layer exposes it as live API
 endpoints (one per agent, plus an optional combined/synthesis endpoint).
 
-Status: pre-code. Only `README.md` and `SYSTEM_PROMPT.md` exist so far — the files
-referenced below (`agent_schema.py`, `meta_planner_prompt.py`, `graph_builder.py`) are
-the planned MVP layout, not yet written. Full product/architecture narrative lives in
-`README.md`; this file is the operating contract for whoever (human or AI) writes code
-here.
+Status: the MVP loop is built and tested — schema, planner, compiler (sequential,
+parallel, supervisor), tool registry, FastAPI serving layer, and a React console. Not yet
+built: persistence, background workers, observability, and the Bedrock AgentCore
+deployment layer. Full architecture reference lives in `docs/systemDescription.md`;
+`README.md` is the quick start; this file is the operating contract for whoever (human or
+AI) writes code here.
 
 ## Non-negotiable architecture principles
 
@@ -104,13 +105,32 @@ base URL and `reasoning_effort` support against Moonshot's docs before relying o
 this has moved fast. Prefer boring, well-supported infra; complexity should live in the
 planning/compilation logic, not exotic infrastructure choices.
 
-## Planned MVP layout
+## Repository layout
+
+Backend and frontend are separate projects with their own manifests and dependencies.
+The backend uses a `src/` layout and is installed (`uv sync`), so tests and scripts import
+`agentic_platform.*` rather than manipulating `sys.path`.
 
 ```
-agent_schema.py         # Pydantic contracts: LLMConfig, AgentSpec, AgentPlan
-meta_planner_prompt.py  # Meta-planner system prompt + structured-output planner call
-graph_builder.py        # Compiles an AgentPlan into a runnable LangGraph graph
+backend/
+  src/agentic_platform/
+    agent_schema.py         # Pydantic contracts: LLMConfig, AgentSpec, AgentPlan
+    meta_planner_prompt.py  # Meta-planner system prompt + structured-output planner call
+    graph_builder.py        # get_llm() factory + compiles an AgentPlan into a LangGraph graph
+    tools.py                # Closed, vetted tool registry + side-effect opt-in rules
+    config.py               # Env loading, provider/model defaults
+    errors.py               # Typed platform errors
+    app.py                  # FastAPI serving layer
+  tests/                    # Offline, fully mocked suite
+  scripts/                  # Real-API smoke checks
+  pyproject.toml            # Backend deps; .env lives here too
+frontend/                   # React + Vite operator console (own package.json)
+docs/                       # systemDescription.md (architecture), SYSTEM_PROMPT.md
 ```
+
+Every `uv` command runs from `backend/`. Serve the API with
+`uv run uvicorn agentic_platform.app:app --reload`; run the console with `npm run dev`
+from `frontend/`.
 
 Keep the planner and compiler cleanly separated: the planner never talks to
 infrastructure, the compiler never talks to an LLM for planning decisions.

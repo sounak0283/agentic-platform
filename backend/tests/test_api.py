@@ -1,5 +1,5 @@
-import app as app_module
-from agent_schema import AgentPlan, AgentSpec, LLMConfig
+import agentic_platform.app as app_module
+from agentic_platform.agent_schema import AgentPlan, AgentSpec, LLMConfig
 from fastapi.testclient import TestClient
 
 
@@ -83,6 +83,26 @@ def test_openapi_docs_available(monkeypatch):
     c = _client(monkeypatch)
     assert c.get("/openapi.json").status_code == 200
     assert c.get("/docs").status_code == 200
+
+
+def test_list_tools_flags_side_effect_entries(monkeypatch):
+    c = _client(monkeypatch)
+    body = c.get("/tools").json()
+    by_name = {t["name"]: t["side_effect"] for t in body["tools"]}
+    assert by_name["lookup"] is False
+    assert by_name["calculator"] is False
+    assert by_name["web_search"] is True
+    assert by_name["wikipedia"] is True
+    # The advertised default matches what the API actually applies server-side.
+    assert set(body["default"]) == {"lookup", "calculator"}
+
+
+def test_list_providers_marks_the_default(monkeypatch):
+    c = _client(monkeypatch)
+    providers = c.get("/providers").json()["providers"]
+    defaults = [p for p in providers if p["default"]]
+    assert len(defaults) == 1
+    assert defaults[0]["provider"] == "google_genai"
 
 
 def test_create_project_default_excludes_side_effect_tools(monkeypatch):

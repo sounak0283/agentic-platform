@@ -5,7 +5,7 @@ agents you want and what each should do, and get back live, callable API endpoin
 compiled multi-agent system — ready to wire into your own website, app, or pipeline.
 
 > Full architecture, the reasoning behind every dependency, error model, and deployment
-> design: see [systemDescription.md](systemDescription.md). This file is a quick-start.
+> design: see [systemDescription.md](docs/systemDescription.md). This file is a quick-start.
 
 ---
 
@@ -41,31 +41,45 @@ engineering behind *how* it runs.
 
 ## Project structure
 
+Backend and frontend are separate, independently runnable projects.
+
 ```
 .
-├── agent_schema.py         # Pydantic contracts: LLMConfig, AgentSpec, AgentPlan
-├── meta_planner_prompt.py  # Meta-planner: brief -> validated AgentPlan
-├── graph_builder.py        # LLM factory + AgentPlan -> LangGraph compiler
-├── tools.py                # Closed, vetted tool registry
-├── config.py                # Env loading, provider/model defaults
-├── errors.py                # Typed platform errors
-├── app.py                   # FastAPI deployment layer (local/MVP serving)
-├── tests/                   # Offline, fully mocked test suite
-├── scripts/smoke_e2e.py     # Real-API end-to-end smoke script
-├── README.md                 # This file
-├── systemDescription.md      # Full architecture, flow diagrams, dependency rationale
-├── CLAUDE.md                 # Operating contract for whoever builds this
-└── SYSTEM_PROMPT.md          # Original builder system prompt
+├── backend/                        # Python API + agent runtime
+│   ├── src/agentic_platform/       # Installable package
+│   │   ├── agent_schema.py         # Pydantic contracts: LLMConfig, AgentSpec, AgentPlan
+│   │   ├── meta_planner_prompt.py  # Meta-planner: brief -> validated AgentPlan
+│   │   ├── graph_builder.py        # LLM factory + AgentPlan -> LangGraph compiler
+│   │   ├── tools.py                # Closed, vetted tool registry
+│   │   ├── config.py               # Env loading, provider/model defaults
+│   │   ├── errors.py               # Typed platform errors
+│   │   └── app.py                  # FastAPI serving layer (local/MVP)
+│   ├── tests/                      # Offline, fully mocked test suite
+│   ├── scripts/smoke_e2e.py        # Real-API end-to-end smoke script
+│   ├── .env.example
+│   └── pyproject.toml
+├── frontend/                       # React + Vite web console
+│   ├── src/
+│   └── package.json
+├── docs/
+│   ├── systemDescription.md        # Full architecture, flow diagrams, dependency rationale
+│   └── SYSTEM_PROMPT.md            # Original builder system prompt
+├── CLAUDE.md                       # Operating contract for whoever builds this
+└── README.md
 ```
 
 ---
 
 ## Getting started
 
-Requires Python 3.11 and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11 with [uv](https://docs.astral.sh/uv/), and Node for the console.
+
+**Backend** — first terminal:
 
 ```bash
-# 1. Install dependencies (creates .venv from pyproject.toml / uv.lock)
+cd backend
+
+# 1. Install dependencies (creates backend/.venv from pyproject.toml / uv.lock)
 uv sync
 
 # 2. Configure environment
@@ -74,10 +88,22 @@ cp .env.example .env
 # GOOGLE_API_KEY or GEMINI_API_KEY is the easiest to start with).
 # TAVILY_API_KEY is only needed if a project opts into the web_search tool.
 
-# 3. Run the API locally
-uv run uvicorn app:app --reload
+# 3. Run the API
+uv run uvicorn agentic_platform.app:app --reload
 # -> http://127.0.0.1:8000/docs for interactive OpenAPI docs
 ```
+
+**Console** — second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+# -> http://localhost:5173
+```
+
+Vite proxies `/api` to the backend on port 8000, so both run on one origin in the
+browser. Set `VITE_API_BASE` to point the console at a different API.
 
 Try it end to end with curl:
 
@@ -100,6 +126,7 @@ curl -s -X POST localhost:8000/projects/<project_id>/run \
 ### Tests
 
 ```bash
+cd backend
 uv run pytest                       # offline, fully mocked — no API keys or network needed
 uv run python scripts/smoke_e2e.py  # real LLM + tool calls end to end (needs .env keys)
 ```
@@ -116,7 +143,7 @@ Chosen automatically by the planner per project, never hardcoded to one:
 | **Parallel** | Independent agents run concurrently on the same input and merge at a synthesis step. |
 | **Supervisor** | A router agent decides at runtime which agent acts next, looping until it signals completion. |
 
-See [systemDescription.md](systemDescription.md) for how each pattern actually compiles
+See [systemDescription.md](docs/systemDescription.md) for how each pattern actually compiles
 to a LangGraph graph.
 
 ---
@@ -140,4 +167,4 @@ to a LangGraph graph.
   never auto-attaches them.
 
 Full security model, secrets handling, and the AgentCore deployment design:
-see [systemDescription.md](systemDescription.md).
+see [systemDescription.md](docs/systemDescription.md).

@@ -14,16 +14,13 @@ from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient
 
-import app as app_module
-from agent_schema import AgentPlan, AgentSpec, LLMConfig
-from config import DEFAULT_MODELS, DEFAULT_PROVIDER
-from graph_builder import compile_graph, initial_state
+import agentic_platform.app as app_module
+from agentic_platform.agent_schema import AgentPlan, AgentSpec, LLMConfig
+from agentic_platform.config import DEFAULT_MODELS, DEFAULT_PROVIDER
+from agentic_platform.graph_builder import compile_graph, initial_state
 
 _LLM = LLMConfig(provider=DEFAULT_PROVIDER, model=DEFAULT_MODELS[DEFAULT_PROVIDER])
 
@@ -155,7 +152,50 @@ def main() -> None:
     else:
         print("[7] SKIPPED web_search step: TAVILY_API_KEY not set in environment")
 
-    print("\nOK: end-to-end smoke passed (sequential + parallel + supervisor).")
+    # 8. Keyless tools (calculator + wikipedia) through the full stack — no API key
+    # needed, so this step always runs.
+    print("[8] keyless tools (calculator + real Wikipedia call)")
+    tool_plan = AgentPlan(
+        agents=[
+            _spec(
+                "researcher",
+                "Researcher",
+                "Use the wikipedia tool to look up the subject in the input, then state "
+                "one factual sentence about it.",
+                tools=["wikipedia"],
+            ),
+            _spec(
+                "math",
+                "Math",
+                "Use the calculator tool to evaluate the expression in the input and "
+                "state the result.",
+                tools=["calculator"],
+                deps=["researcher"],
+            ),
+        ],
+        orchestration_pattern="sequential",
+    )
+    _check_run("keyless tools", tool_plan, {"subject": "Alan Turing", "expression": "(12 * 8) / 4"})
+
+    # 9. WolframAlpha, gated on its app id being set.
+    if os.environ.get("WOLFRAM_ALPHA_APPID"):
+        print("[9] wolfram_alpha tool (real call)")
+        wolfram_plan = AgentPlan(
+            agents=[
+                _spec(
+                    "solver",
+                    "Solver",
+                    "Use the wolfram_alpha tool to answer the question in the input.",
+                    tools=["wolfram_alpha"],
+                )
+            ],
+            orchestration_pattern="sequential",
+        )
+        _check_run("wolfram_alpha", wolfram_plan, {"question": "What is 17 squared?"})
+    else:
+        print("[9] SKIPPED wolfram_alpha step: WOLFRAM_ALPHA_APPID not set in environment")
+
+    print("\nOK: end-to-end smoke passed (sequential + parallel + supervisor + tools).")
 
 
 if __name__ == "__main__":

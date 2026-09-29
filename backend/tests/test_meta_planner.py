@@ -1,8 +1,8 @@
 import pytest
 
-import meta_planner_prompt as mp
-from agent_schema import AgentPlan, AgentSpec, LLMConfig
-from errors import PlannerError
+import agentic_platform.meta_planner_prompt as mp
+from agentic_platform.agent_schema import AgentPlan, AgentSpec, LLMConfig
+from agentic_platform.errors import PlannerError
 
 
 def _valid_plan():

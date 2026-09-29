@@ -10,7 +10,7 @@ not to discover the shape of the system.
 This document describes what is **actually built and tested** in the code, and is
 explicit about what's still just a design (see §12, "Current status").
 
-> Companion docs: [README.md](README.md) (product pitch + quick start), `CLAUDE.md`
+> Companion docs: [README.md](../README.md) (product pitch + quick start), `CLAUDE.md`
 > (the operating contract new work must follow), `SYSTEM_PROMPT.md` (the original
 > builder brief this project was scoped from).
 
@@ -47,7 +47,11 @@ calls an LLM for planning decisions. The LLM emits only structured *configuratio
 ## 2. Module map
 
 Which file talks to which — useful before reading any single file, so an import doesn't
-look like a surprise.
+look like a surprise. Everything below lives in `backend/src/agentic_platform/`, an
+installed package (`uv sync` from `backend/`), so tests and scripts import
+`agentic_platform.*` rather than manipulating `sys.path`. Within the package, imports are
+relative (`from .config import`), so the package stays relocatable. The console is a
+separate project in `frontend/` with its own dependencies — see §8.
 
 ```mermaid
 flowchart LR
@@ -267,7 +271,34 @@ for LLM providers.
 | Tool | Side effect? | Backing | Key required |
 |---|---|---|---|
 | `lookup` | No | Fixed 3-fact offline table | None |
-| `web_search` | Yes (network egress, third-party API) | Tavily (`langchain-tavily`, `TavilySearch`) | `TAVILY_API_KEY` |
+| `calculator` | No | Pure-Python AST-restricted arithmetic evaluator | None |
+| `web_search` | Yes | Tavily (`langchain-tavily`, `TavilySearch`) | `TAVILY_API_KEY` |
+| `wikipedia` | Yes | Wikipedia search API + REST summary endpoint | None |
+| `arxiv` | Yes | arxiv.org Atom export API (`export.arxiv.org/api/query`) | None |
+| `pubmed` | Yes | NCBI E-utilities (`esearch` + `esummary`) | None (`PUBMED_API_KEY` optional, raises rate limit) |
+| `weather` | Yes | Open-Meteo geocoding + forecast API | None |
+| `yahoo_finance_news` | Yes | `yfinance`'s `Ticker(...).news` | None |
+| `wolfram_alpha` | Yes | Wolfram\|Alpha Short Answers API | `WOLFRAM_ALPHA_APPID` |
+
+**Side effect means network egress to a third party, not "needs a key."** `wikipedia`,
+`arxiv`, `pubmed`, `weather` and `yahoo_finance_news` need no credentials at all but
+still leave the machine, so they carry the same opt-in requirement as the keyed ones.
+Only `lookup` and `calculator` compute locally and are therefore available by default.
+
+**Why these call REST APIs directly rather than using `langchain-community`.** That
+package was archived (read-only, no future fixes) in 2026. Its Wikipedia integration is
+already broken — the `wikipedia` PyPI package it depends on, unmaintained since ~2016,
+fails against Wikipedia's current API and can't be fixed by configuration — and its Arxiv
+integration only works if `arxiv` is pinned below 3.0 because of an upstream API change.
+None of these five ever got a maintained standalone package the way Tavily did
+(`langchain-tavily`). Calling each service's documented, stable endpoint with `requests`
+is both less code and less exposure to a frozen dependency.
+
+**Calculator safety.** The expression is parsed with `ast.parse(..., mode="eval")` and
+walked by `_eval_arithmetic`, which permits only numeric constants, parentheses, and
+`+ - * / // % **`. Names, calls, attributes and subscripts raise before anything is
+evaluated, so `__import__('os').system(...)` is rejected at the AST level rather than
+executed. `eval()` is never called on model- or user-supplied text.
 
 `get_tools(names)` resolves names against the registry (raising **`UnknownToolError`**,
 naming every unresolved name, not just the first) and calls each factory. A side-effect
@@ -317,6 +348,8 @@ move to Postgres/Redis and multi-tenancy is additive, not a rewrite.
 | Route | Purpose |
 |---|---|
 | `GET /health` | liveness |
+| `GET /tools` | the tool registry, each entry flagged `side_effect`, plus the default (opt-in-free) set |
+| `GET /providers` | selectable provider/model pairs, with the platform default marked |
 | `POST /projects` | brief → `plan_project` → store plan, return `project_id` + plan + `side_effect_tools_enabled` |
 | `GET /projects/{id}` | fetch brief + plan + `compiled` flag + `side_effect_tools_enabled` |
 | `PATCH /projects/{id}/plan` | replace plan (validators re-run); invalidates stale compiled graph |
@@ -346,6 +379,29 @@ sequenceDiagram
     G-->>API: {outputs, errors, halted}
     API-->>U: results
 ```
+
+### The web console (`frontend/`)
+
+A React + Vite single-page app that drives the API above — the operator-facing surface for
+the same five stages. It is a *client* of the platform, not part of it: it holds no
+business logic, and every rule it appears to enforce is really enforced server-side.
+
+| Concern | Where it lives |
+|---|---|
+| API calls + typed error normalisation | `frontend/src/lib/api.js` — every failure becomes an `ApiError` carrying the backend's `{error_type, message, details}` |
+| Stage state machine | `frontend/src/App.jsx` — brief → plan → compiled → result, with one busy flag per concern so a slow run doesn't freeze the console |
+| Brief, agent count, model, tool opt-in | `frontend/src/components/DefinePanel.jsx` |
+| Plan review + raw JSON editing | `frontend/src/components/PlanPanel.jsx` (a plan edit clears the compiled flag, mirroring the server's cache invalidation) |
+| Full-graph and single-agent execution | `frontend/src/components/RunPanel.jsx` |
+
+The tool picker seeds itself from `GET /tools`'s `default` list, so it opens showing
+exactly the tools the API would use if `available_tools` were omitted — the opt-in posture
+is visible rather than hidden. Ticking a `side_effect` tool surfaces an explicit
+"external access opted in" warning naming the services involved.
+
+In development the console runs on Vite's port 5173 and proxies `/api` to port 8000, so
+the browser stays on one origin; `app.py` also carries a CORS allow-list scoped to those
+localhost dev ports for direct (unproxied) calls.
 
 ---
 
@@ -423,6 +479,7 @@ another's.
 | Agent orchestration | LangGraph | **In use** |
 | Agent / tool abstraction | LangChain | **In use** |
 | API layer | FastAPI | **In use** |
+| Web console | React + Vite | **In use** (`frontend/`) |
 | Primary datastore | PostgreSQL | Planned (in-memory dicts today) |
 | Cache / queue | Redis | Planned |
 | Background workers | Celery / RQ | Planned |
@@ -446,13 +503,15 @@ library."
 | **langchain-openai** | The `ChatOpenAI` client, for OpenAI itself and for any OpenAI-compatible endpoint. | Used twice in `get_llm`: once implicitly via `init_chat_model` for the native `openai` provider, and once explicitly, constructing `ChatOpenAI(base_url=MOONSHOT_BASE_URL, ...)` for Moonshot. | Moonshot's Kimi models are OpenAI-API-compatible but aren't a native `init_chat_model` provider string — `ChatOpenAI` pointed at a different `base_url` is the standard way to wire an OpenAI-compatible endpoint into LangChain without writing a bespoke HTTP client. |
 | **langchain-google-genai** | The `ChatGoogleGenerativeAI` client for the `google_genai` provider. | `get_llm` constructs it directly (rather than via `init_chat_model`) so it can resolve the API key from either `GOOGLE_API_KEY` or `GEMINI_API_KEY` — both names are common in the wild. It's also `config.py`'s `DEFAULT_PROVIDER`, so it's what the planner and the FastAPI defaults use when a request doesn't name a model. | Needed as a first-class native provider for the multi-provider factory; handled explicitly (not through `init_chat_model`) specifically to support the two-env-var-name key lookup, which `_require_key` in `graph_builder.py` implements. |
 | **langchain-tavily** | `TavilySearch`, a structured web-search tool. | `tools.py`'s `_build_web_search()` constructs it lazily (only when the `web_search` tool is actually resolved) and returns it from `TOOL_REGISTRY`. | This is the platform's first tool with a real-world side effect (network egress to a third party) — it's what makes the tool registry more than a proof of concept, and it exists specifically to exercise (and require) the opt-in enforcement described in §6. Chosen over a keyless option (e.g. DuckDuckGo) because it returns structured JSON results suited to agent consumption and is a first-party LangChain integration, matching the project's "boring, well-supported infra" preference over exotic scraping. |
+| **requests** | A plain, synchronous HTTP client. | `tools.py` — every hand-rolled network tool (`wikipedia`, `arxiv`, `pubmed`, `weather`, `wolfram_alpha`) calls its service's REST endpoint through it, with a shared `User-Agent` header and a 10-second timeout. | The alternative to one small HTTP client is a separate wrapper library per service — which is exactly the `langchain-community` dependency this codebase deliberately avoids (§6). Synchronous is correct here: tool calls already run inside a worker thread bounded by `RunBounds.timeout_s`, so there's no event loop to block. |
+| **yfinance** | A maintained client for Yahoo Finance's data endpoints. | `tools.py`'s `yahoo_finance_news` tool calls `yfinance.Ticker(symbol).news` and formats the headlines. | Yahoo has no official public news API, so any integration is best-effort against an undocumented endpoint; `yfinance` is the actively-maintained library that tracks Yahoo's changes, and it's what the archived `langchain-community` tool depended on anyway — using it directly removes a dead middleman rather than adding risk. |
 | **fastapi** | The API layer: async routes, request/response validation from Pydantic models, auto-generated OpenAPI docs, typed exception handlers. | `app.py` — every route (`/projects`, `/compile`, `/run`, `/invoke`, …), the `CreateProjectRequest`/`RunRequest`/`AgentInvokeRequest` models, and one `@app.exception_handler` per typed `PlatformError` subclass. | CLAUDE.md requires OpenAPI docs as "a real deliverable," which FastAPI generates for free from the same Pydantic models already used for the `AgentPlan` contract — no separate API-schema definition to keep in sync. |
-| **uvicorn[standard]** | The ASGI server that actually runs the FastAPI app; `[standard]` pulls in the faster/optional extras (`httptools`, `watchfiles`, etc.) used for local `--reload` dev. | Invoked directly: `uv run uvicorn app:app --reload` (see README). | FastAPI defines routes; it doesn't listen on a socket. Something has to actually serve HTTP, and uvicorn is the reference ASGI server the FastAPI docs themselves recommend. |
+| **uvicorn[standard]** | The ASGI server that actually runs the FastAPI app; `[standard]` pulls in the faster/optional extras (`httptools`, `watchfiles`, etc.) used for local `--reload` dev. | Invoked directly: `uv run uvicorn agentic_platform.app:app --reload` (see README). | FastAPI defines routes; it doesn't listen on a socket. Something has to actually serve HTTP, and uvicorn is the reference ASGI server the FastAPI docs themselves recommend. |
 | **pydantic** | The schema/validation layer behind every structured contract in the system. | `agent_schema.py`'s `BaseModel`s (`LLMConfig`, `AgentSpec`, `AgentOutput`, `RunBounds`, `AgentPlan`) with `field_validator`/`model_validator` for the graph-integrity checks in §3; every FastAPI request/response model. | This is the concrete mechanism behind non-negotiable principle #3 (structured output everywhere) and #7 (never trust the model's own claim of well-formedness) — `with_structured_output(AgentPlan)` and the re-validation in `_semantic_check` both depend on `AgentPlan` being a real Pydantic model, not a loosely-typed dict. |
 | **python-dotenv** | Loads a local `.env` file into `os.environ`. | `config.py` calls `load_dotenv()` once at import, so every module's `os.environ.get(...)` (provider keys, `TAVILY_API_KEY`) sees the same environment without each module reimplementing env loading. | Pure local-dev convenience — lets contributors keep keys in a gitignored `.env` instead of exporting them in every shell session — with zero effect on production, where real env vars/secrets managers are used instead. |
-| **pytest** *(dev)* | The test runner for the entire suite. | Every file under `tests/`. `pyproject.toml`'s `[tool.pytest.ini_options]` defines the `e2e` marker and excludes it by default (`addopts = "-m 'not e2e'"`), so the default `uv run pytest` never makes a real network/LLM call. | The project's verify-and-retry working style (CLAUDE.md) depends on a fast, fully offline, repeatable test suite — 40 tests run in a few seconds precisely because nothing here needs a real API key. |
+| **pytest** *(dev)* | The test runner for the entire suite. | Every file under `backend/tests/`. `backend/pyproject.toml`'s `[tool.pytest.ini_options]` defines the `e2e` marker and excludes it by default (`addopts = "-m 'not e2e'"`), so the default `uv run pytest` never makes a real network/LLM call. | The project's verify-and-retry working style (CLAUDE.md) depends on a fast, fully offline, repeatable test suite — 40 tests run in a few seconds precisely because nothing here needs a real API key. |
 | **pytest-asyncio** *(dev)* | Lets pytest run `async def` test functions and sets the asyncio mode. | `asyncio_mode = "auto"` in `pyproject.toml`; enables async test support for the FastAPI/httpx-based tests. | FastAPI is an async framework; without this, async endpoints and async test clients would need manual event-loop plumbing in every test. |
-| **httpx** *(dev)* | The HTTP client `fastapi.testclient.TestClient` is built on. | Used implicitly by `TestClient(app_module.app)` in `tests/test_api.py` and `scripts/smoke_e2e.py` — every simulated request to the FastAPI app goes through it. | Lets tests and the smoke script call the real FastAPI app in-process (real routing, real validation, real exception handlers) without binding a socket or running a separate server process. |
+| **httpx** *(dev)* | The HTTP client `fastapi.testclient.TestClient` is built on. | Used implicitly by `TestClient(app_module.app)` in `backend/tests/test_api.py` and `backend/scripts/smoke_e2e.py` — every simulated request to the FastAPI app goes through it. | Lets tests and the smoke script call the real FastAPI app in-process (real routing, real validation, real exception handlers) without binding a socket or running a separate server process. |
 
 ---
 
@@ -486,10 +545,13 @@ covering all three orchestration patterns and the real `web_search` tool):
 - Meta-planner with retry-on-validation-error (`meta_planner_prompt.py`)
 - Compiler for all three orchestration patterns, with per-agent error recovery
   (`graph_builder.py`)
-- Tool registry with one offline mock tool (`lookup`) and one real, opt-in,
-  side-effecting tool (`web_search` via Tavily), enforced default exclusion of
-  side-effect tools (`tools.py`)
+- Tool registry with nine tools — two local (`lookup`, `calculator`) and seven
+  opt-in networked ones (`web_search`, `wikipedia`, `arxiv`, `pubmed`, `weather`,
+  `yahoo_finance_news`, `wolfram_alpha`) — with enforced default exclusion of every
+  side-effecting tool (`tools.py`)
 - FastAPI local serving layer with typed error responses (`app.py`)
+- React + Vite web console covering the full brief → plan → compile → run loop
+  (`frontend/`), verified against the live API in a browser
 
 **Not yet built** (design recorded above, not code):
 - Bedrock AgentCore deployment layer (§9) — entrypoint adapter, container build, runtime
@@ -500,4 +562,5 @@ covering all three orchestration patterns and the real `web_search` tool):
 - KMS-backed BYOK secret storage (keys come from server env/`.env` today).
 - Observability (LangSmith / AgentCore Observability) wiring.
 - Dedicated synthesis/aggregator endpoint (currently `/run` returns the raw outputs map).
-- Broader tool registry beyond `lookup` + `web_search`.
+- Tools requiring per-project credentials/OAuth (Gmail, Slack, GitHub, Jira, SQL) — these
+  need a credential-management layer that doesn't exist yet, not just registry entries.

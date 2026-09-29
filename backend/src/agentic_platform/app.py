@@ -13,12 +13,13 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from agent_schema import AgentPlan
-from config import DEFAULT_MODELS, DEFAULT_PROVIDER
-from errors import (
+from .agent_schema import AgentPlan
+from .config import DEFAULT_MODELS, DEFAULT_PROVIDER
+from .errors import (
     MissingProviderKeyError,
     MissingToolKeyError,
     PlannerError,
@@ -26,15 +27,25 @@ from errors import (
     UnknownToolError,
     UnsupportedProviderError,
 )
-from graph_builder import compile_graph, run_graph, run_single_agent
-from meta_planner_prompt import plan_project
-from tools import SIDE_EFFECT_TOOLS, default_tool_names
+from .graph_builder import compile_graph, run_graph, run_single_agent
+from .meta_planner_prompt import plan_project
+from .tools import SIDE_EFFECT_TOOLS, TOOL_REGISTRY, default_tool_names
 
 app = FastAPI(
     title="Agentic Platform",
     description="Describe a multi-agent task in natural language; get live, callable "
     "endpoints for a compiled multi-agent system.",
     version="0.1.0",
+)
+
+# The console SPA runs on its own Vite dev server, so browser calls to this API are
+# cross-origin in development. Scoped to localhost dev ports; a deployed build would be
+# served same-origin or given its real origin here.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # In-memory stores (MVP). Keyed by project id so persistence/multi-tenancy is additive.
@@ -82,6 +93,29 @@ def _get_project(project_id: str) -> dict[str, Any]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/tools")
+def list_tools() -> dict[str, Any]:
+    """The tool registry, flagging which entries need explicit per-project opt-in."""
+    return {
+        "tools": [
+            {"name": name, "side_effect": name in SIDE_EFFECT_TOOLS}
+            for name in TOOL_REGISTRY
+        ],
+        "default": default_tool_names(),
+    }
+
+
+@app.get("/providers")
+def list_providers() -> dict[str, Any]:
+    """Selectable provider/model pairs, with the platform default marked."""
+    return {
+        "providers": [
+            {"provider": provider, "model": model, "default": provider == DEFAULT_PROVIDER}
+            for provider, model in DEFAULT_MODELS.items()
+        ]
+    }
 
 
 @app.post("/projects", status_code=201)

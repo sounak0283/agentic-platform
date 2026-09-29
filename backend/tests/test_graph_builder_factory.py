@@ -1,8 +1,8 @@
 import pytest
 
-from agent_schema import LLMConfig
-from errors import MissingProviderKeyError
-from graph_builder import get_llm
+from agentic_platform.agent_schema import LLMConfig
+from agentic_platform.errors import MissingProviderKeyError
+from agentic_platform.graph_builder import get_llm
 
 
 def test_missing_key_raises_typed_error(monkeypatch):
